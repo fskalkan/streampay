@@ -1,0 +1,33 @@
+name: Bug report
+description: Report broken or incorrect behavior
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the transaction hash / test name and expected vs actual behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - contract (Rust)
+        - frontend (Next.js)
+        - CI
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: cargo test -p streampay-contract test::withdraw_...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit / version

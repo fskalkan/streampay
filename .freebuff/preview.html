@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>StreamPay — Streaming Payments for Stellar</title>
+<style>
+  :root{
+    --bg:#0a0e16; --panel:#111725; --panel2:#0d1320; --line:#22304a;
+    --text:#e8eefb; --muted:#93a1b8; --accent:#8b7cff; --accent2:#39c5ff;
+    --green:#3ddc84; --amber:#ffb454; --red:#ff6b6b;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1100px 560px at 75% -10%,#182242 0%,var(--bg) 55%);color:var(--text);
+       font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:36px 22px 70px}
+  header .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--accent2);text-transform:uppercase}
+  header h1{margin:6px 0 8px;font-size:34px;letter-spacing:.2px;
+            background:linear-gradient(90deg,#c9c2ff,#7ce7ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  header p.sub{margin:0;color:var(--muted);max-width:70ch}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 0}
+  .badge{font-family:var(--mono);font-size:12px;padding:3px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:var(--panel2)}
+  .badge .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px;box-shadow:0 0 8px var(--green)}
+  h2{font-size:19px;margin:42px 0 12px;display:flex;align-items:center;gap:10px}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card .label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+  .card .value{font-family:var(--mono);font-size:20px;margin-top:6px}
+  .card .value.ok{color:var(--green)}
+  .card .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+  pre{font-family:var(--mono);font-size:13px;line-height:1.55;background:var(--panel2);border:1px solid var(--line);
+      border-radius:12px;padding:18px 20px;overflow-x:auto;color:#c9d6ee;margin:0}
+  pre .c{color:#5b6b85} pre .k{color:#7ce7ff} pre .n{color:#c9c2ff} pre .g{color:#3ddc84}
+  table{width:100%;border-collapse:collapse;font-size:14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{padding:10px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  td code, .mono{font-family:var(--mono);font-size:13px;color:#bcd0f5}
+  .tag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line)}
+  .tag.get{color:var(--accent2);border-color:#1d3a52}
+  .tag.tx{color:var(--amber);border-color:#4a3a1d}
+  .checklist{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px}
+  .checklist li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:14px}
+  .checklist li::before{content:"✓ ";color:var(--green);font-weight:700}
+  .checklist li span{color:var(--muted)}
+  ul.roadmap{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+  ul.roadmap li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:14px;display:flex;gap:10px;align-items:baseline}
+  ul.roadmap .box{font-family:var(--mono);color:var(--muted)}
+  ul.roadmap .done .box{color:var(--green)}
+  ul.roadmap .meta{color:var(--muted);font-size:12px;margin-left:auto;font-family:var(--mono)}
+  /* simulator */
+  .sim-row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+  .sim-field{display:flex;flex-direction:column;gap:4px}
+  .sim-field label{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+  .sim-field input[type=number]{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+       border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:14px;width:130px}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .sim-out{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:16px}
+  .sim-out .card .value{font-size:22px}
+  .bar{height:10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);margin-top:14px;overflow:hidden}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%}
+  footer{margin-top:56px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:18px}
+  footer .mono{font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Soroban · Stellar · Open Source</div>
+    <h1>⚡ StreamPay</h1>
+    <p class="sub">Continuous, per-second payment streams for Stellar — payroll, DAO contributor pay,
+       subscriptions and vesting. Sablier-style money flow, native to Soroban: funds accrue linearly
+       between <span class="mono">start_time</span> and <span class="mono">end_time</span>, the recipient
+       withdraws at any time, and cancellation refunds the unaccrued remainder pro-rata.</p>
+    <div class="badges">
+      <span class="badge"><span class="dot"></span>tests 40/40 passing</span>
+      <span class="badge">soroban-sdk 27.0.6</span>
+      <span class="badge">Rust 1.97 · wasm32v1-none</span>
+      <span class="badge">Apache-2.0</span>
+      <span class="badge">checked math · no panics</span>
+    </div>
+  </header>
+
+  <h2>Contract status</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Unit + property tests</div><div class="value ok">40 / 40</div>
+      <div class="hint">Every spec edge case covered</div></div>
+    <div class="card"><div class="label">Error surface</div><div class="value">12 codes</div>
+      <div class="hint">StreamError enum — stable, append-only</div></div>
+    <div class="card"><div class="label">Max stream length</div><div class="value">100 y</div>
+      <div class="hint">Guards worst-case rate multiplication</div></div>
+    <div class="card"><div class="label">Storage</div><div class="value mono">persistent + TTL</div>
+      <div class="hint">Extend on every mutation (~29 d)</div></div>
+  </div>
+
+  <h2>Live accrual simulator</h2>
+  <div class="panel">
+    <div class="sim-row">
+      <div class="sim-field"><label>Deposit (token units)</label><input type="number" id="dep" value="10000" min="1"></div>
+      <div class="sim-field"><label>Duration (days)</label><input type="number" id="days" value="30" min="1" max="36500"></div>
+      <div class="sim-field" style="flex:1;min-width:240px"><label>Elapsed: <span id="elLabel" class="mono"></span></label>
+        <input type="range" id="slider" min="0" value="604800"></div>
+    </div>
+    <div class="sim-out">
+      <div class="card"><div class="label">Streamed so far</div><div class="value" id="outStreamed" style="color:var(--accent2)"></div></div>
+      <div class="card"><div class="label">Available to withdraw</div><div class="value ok" id="outAvail"></div></div>
+      <div class="card"><div class="label">Still locked (sender)</div><div class="value" id="outLocked"></div></div>
+      <div class="card"><div class="label">Progress</div><div class="value" id="outPct"></div></div>
+    </div>
+    <div class="bar"><i id="bar"></i></div>
+  </div>
+
+  <h2>How streams accrue</h2>
+<pre>
+ <span class="c">deposit ──────────────── locked in the contract ────────────────▶</span>
+ <span class="n">██</span><span class="g">▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+ <span class="c">              │ linear per-second release, floor division</span>
+ time <span class="k">──────</span> start_time <span class="k">───────────────────────────</span> end_time <span class="k">────▶</span>
+
+ <span class="k">streamed(t) = deposit × elapsed / duration</span>   <span class="c">(u128 checked, floored)</span>
+ <span class="g">available  = streamed − withdrawn</span>            <span class="c">; 0 before start</span>
+ <span class="n">on cancel: recipient ← available,  sender ← deposit − streamed</span>
+</pre>
+
+  <h2>Entry points</h2>
+  <table>
+    <tr><th>Function</th><th>Caller</th><th>Token movement</th><th>Event</th></tr>
+    <tr><td><code>create_stream(sender, recipient, token, deposit, start, end, cancelable) → u64</code></td>
+        <td>anyone <span class="tag tx">sender auth</span></td><td>pulls deposit in</td><td><code>StreamCreated</code></td></tr>
+    <tr><td><code>withdraw(stream_id, amount)</code></td>
+        <td>recipient <span class="tag tx">recipient auth</span></td><td>pays out ≤ accrued</td><td><code>Withdrawn</code></td></tr>
+    <tr><td><code>cancel_stream(caller, stream_id)</code></td>
+        <td>sender; recipient iff <code>cancelable</code></td><td>pro-rata split, atomic</td><td><code>StreamCancelled</code></td></tr>
+    <tr><td><code>top_up(stream_id, amount)</code></td>
+        <td>sender <span class="tag tx">sender auth</span></td><td>pulls added funds</td><td><code>StreamToppedUp</code></td></tr>
+    <tr><td><code>get_stream(stream_id) → Stream</code></td><td>— <span class="tag get">read-only</span></td><td>—</td><td>—</td></tr>
+    <tr><td><code>available(stream_id) → i128</code></td><td>— <span class="tag get">read-only</span></td><td>—</td><td>—</td></tr>
+  </table>
+
+  <h2>Error codes</h2>
+  <table>
+    <tr><th>Code</th><th>Variant</th><th>Raised when</th></tr>
+    <tr><td>1</td><td><code>StreamNotFound</code></td><td>no stream with this id</td></tr>
+    <tr><td>2–3</td><td><code>NotStreamSender / NotStreamRecipient</code></td><td>reserved role checks</td></tr>
+    <tr><td>4</td><td><code>StreamNotCancellable</code></td><td>recipient cancels a non-cancelable stream</td></tr>
+    <tr><td>5</td><td><code>StreamNotActive</code></td><td>cancelled / depleted stream mutated</td></tr>
+    <tr><td>6</td><td><code>StartTimeInPast</code></td><td>start_time before current ledger</td></tr>
+    <tr><td>7</td><td><code>InvalidTimeRange</code></td><td>end_time ≤ start_time (zero duration)</td></tr>
+    <tr><td>8</td><td><code>DurationTooLong</code></td><td>window exceeds 100 years</td></tr>
+    <tr><td>9</td><td><code>ZeroAmount</code></td><td>amount ≤ 0</td></tr>
+    <tr><td>10</td><td><code>AmountExceedsAvailable</code></td><td>withdrawal above accrued balance</td></tr>
+    <tr><td>11</td><td><code>MathOverflow</code></td><td>checked math would overflow</td></tr>
+    <tr><td>12</td><td><code>NotAuthorized</code></td><td>caller is neither sender nor (cancelable) recipient</td></tr>
+  </table>
+
+  <h2>Spec edge cases — all covered by tests</h2>
+  <ul class="checklist">
+    <li>Withdraw before <span>start_time → available = 0</span></li>
+    <li>Withdraw at / after <span>end_time → full remainder</span></li>
+    <li>Cancel fully-withdrawn stream <span>→ reverts, not double-pay</span></li>
+    <li>Cancel before start <span>→ 100% refund to sender</span></li>
+    <li>Top-up after end <span>→ funds fully accrued, withdrawable</span></li>
+    <li>Sequential partial withdrawals <span>→ monotonic, never over</span></li>
+    <li>Checked math <span>→ i128::MAX deposits, 100-year windows</span></li>
+    <li>Zero duration / zero amount <span>→ rejected at creation</span></li>
+    <li>Reentrancy <span>→ CEI ordering, malicious-token test</span></li>
+    <li>Property test <span>→ partial sums ≤ full-window accrual</span></li>
+  </ul>
+
+  <h2>Roadmap</h2>
+  <ul class="roadmap">
+    <li class="done"><span class="box">[x]</span> Core contract: create / withdraw / cancel / top-up + 40 tests <span class="meta">v0.1</span></li>
+    <li><span class="box">[ ]</span> <code>pause_stream</code> (good first issue) <span class="meta">v0.2</span></li>
+    <li><span class="box">[ ]</span> Event indexer service (TypeScript, GetEvents polling) <span class="meta">v0.2</span></li>
+    <li><span class="box">[ ]</span> Fuzzing in CI (cargo-fuzz on <code>streamed_at</code>) <span class="meta">v0.3</span></li>
+    <li><span class="box">[ ]</span> Multi-token batch creation <span class="meta">v0.3</span></li>
+    <li><span class="box">[ ]</span> Minimal web UI: Next.js + Freighter <span class="meta">v0.4</span></li>
+    <li><span class="box">[ ]</span> Testnet deployment + example scripts <span class="meta">v0.4</span></li>
+    <li><span class="box">[ ]</span> External audit <span class="meta">v1.0</span></li>
+  </ul>
+
+  <footer>
+    <div><strong>StreamPay</strong> · contracts/streaming-payments · docs/ARCHITECTURE.md · CONTRIBUTING.md</div>
+    <div class="mono">Licensed Apache-2.0 · planned funding: GrantFox bounties + Drips dependency funding</div>
+    <div class="mono">This is a static dashboard rendered from .freebuff/preview.html — the Next.js UI is scaffolded in /frontend.</div>
+  </footer>
+</div>
+
+<script>
+  // BigInt accrual math — mirrors stream::streamed_at (floor division, capped at deposit).
+  var DAY = 86400n;
+  var $ = function(id){ return document.getElementById(id); };
+  function bn(id, fallback){ var v = BigInt(parseInt($(id).value, 10) || fallback); return v > 0n ? v : fallback; }
+  function fmt(v){ return v.toLocaleString("en-US"); }
+  function render(){
+    var dep = bn("dep", 10000n);
+    var durDays = bn("days", 30n);
+    var dur = durDays * DAY;
+    var slider = $("slider");
+    slider.max = (dur > 4000000000n ? 4000000000n : dur).toString();
+    var el = BigInt(slider.value);
+    if (el > dur) el = dur;
+    var streamed = (dep * el) / dur;           // floor division, same as the contract
+    if (streamed > dep) streamed = dep;
+    var locked = dep - streamed;
+    var pct = Number((el * 10000n) / dur) / 100;
+    $("elLabel").textContent = fmt(Number(el / DAY)) + " d " + fmt(Number(el % DAY)) + " s";
+    $("outStreamed").textContent = fmt(streamed);
+    $("outAvail").textContent = fmt(streamed);   // nothing withdrawn yet in this demo
+    $("outLocked").textContent = fmt(locked);
+    $("outPct").textContent = pct.toFixed(2) + " %";
+    $("bar").style.width = Math.min(pct, 100) + "%";
+  }
+  ["dep","days"].forEach(function(id){ $(id).addEventListener("input", render); });
+  $("slider").addEventListener("input", render);
+  render();
+</script>
+</body>
+</html>

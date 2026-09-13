@@ -1,0 +1,20 @@
+# Rust / Soroban
+target/
+**/target/
+*.wasm
+
+# Node / Next.js frontend
+node_modules/
+.next/
+out/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.log

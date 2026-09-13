@@ -1,0 +1,226 @@
+/**
+ * Minimal Soroban integration for StreamPay.
+ *
+ * Flow for every mutating call: build the contract operation → simulate
+ * (validity + resource estimate) → Freighter signs → send → poll until
+ * inclusion, then decode the contract's return value. Read-only calls
+ * simulate and decode the return value without signing.
+ */
+import {
+  Account,
+  Address,
+  nativeToScVal,
+  Networks,
+  rpc,
+  scValToNative,
+  TransactionBuilder,
+  Contract,
+  xdr,
+} from "@stellar/stellar-sdk";
+import { signTransaction } from "@stellar/freighter-api";
+
+const RPC_URL =
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
+  "https://soroban-testnet.stellar.org";
+const NETWORK =
+  process.env.NEXT_PUBLIC_NETWORK === "PUBLIC"
+    ? Networks.PUBLIC
+    : Networks.TESTNET;
+const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
+
+function contract(): Contract {
+  if (!CONTRACT_ID) {
+    throw new Error(
+      "NEXT_PUBLIC_STREAMING_CONTRACT_ID is not set — deploy the contract and put its id in frontend/.env.local"
+    );
+  }
+  return new Contract(CONTRACT_ID);
+}
+
+export interface StreamArgs {
+  token: string;
+  recipient: string;
+  /** Deposit in smallest token units (stroops for classic assets), as a string. */
+  deposit: string;
+  /** Stream length in days (start = now). */
+  days: string;
+  cancelable: boolean;
+}
+
+export interface StreamView {
+  id: string;
+  sender: string;
+  recipient: string;
+  token: string;
+  deposit: string;
+  withdrawn: string;
+  startTime: number;
+  endTime: number;
+  cancelable: boolean;
+  status: string;
+}
+
+function scAddr(s: string) {
+  return nativeToScVal(new Address(s), { type: "address" });
+}
+
+function u64(id: string | number | bigint) {
+  return nativeToScVal(BigInt(id), { type: "u64" });
+}
+
+function i128(v: string) {
+  return nativeToScVal(BigInt(v), { type: "i128" });
+}
+
+/** The ed25519 all-zero key: a syntactically valid source for simulations. */
+const DUMMY_SOURCE = new Account(
+  "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  "0"
+);
+
+/**
+ * Builds, simulates, Freighter-signs, sends and polls a mutating contract
+ * operation. Resolves with the contract method's decoded return value.
+ */
+async function send<T>(
+  source: string,
+  operation: xdr.Operation,
+  decode: (v: xdr.ScVal) => T
+): Promise<T> {
+  const server = new rpc.Server(RPC_URL);
+  const account = await server.getAccount(source);
+  const tx = new TransactionBuilder(account, {
+    fee: "100000",
+    networkPassphrase: NETWORK,
+  })
+    .addOperation(operation)
+    .setTimeout(60)
+    .build();
+
+  // 1. Simulate: catches contract errors early and assembles Soroban tx data.
+  const simulated = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simulated)) {
+    throw new Error(`Simulation failed: ${simulated.error}`);
+  }
+  const ready = rpc.assembleTransaction(tx, simulated).build();
+
+  // 2. Sign with Freighter.
+  const { signedTxXdr } = await signTransaction(ready.toXDR(), {
+    networkPassphrase: NETWORK,
+  });
+  const signed = TransactionBuilder.fromXDR(signedTxXdr, NETWORK);
+
+  // 3. Send and poll for inclusion.
+  const sent = await server.sendTransaction(signed);
+  if (sent.status === "ERROR") {
+    throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
+  }
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const res = await server.getTransaction(sent.hash);
+    if (res.status === rpc.Api.GetTransactionStatus.FAILED) {
+      throw new Error(`Transaction failed: ${JSON.stringify(res.resultXdr)}`);
+    }
+    if (res.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+      const successful = res as { returnValue: xdr.ScVal };
+      return decode(successful.returnValue);
+    }
+    // PENDING / DUPLICATE / TRY_AGAIN_LATER — keep polling.
+  }
+  throw new Error("Timed out waiting for transaction inclusion");
+}
+
+export async function createStream(
+  sender: string,
+  args: StreamArgs
+): Promise<bigint> {
+  const start = Math.floor(Date.now() / 1000) + 1;
+  const end = start + Math.ceil(Number(args.days) * 86_400);
+  const op = contract().call(
+    "create_stream",
+    scAddr(sender),
+    scAddr(args.recipient),
+    scAddr(args.token),
+    i128(args.deposit),
+    u64(start),
+    u64(end),
+    nativeToScVal(args.cancelable)
+  );
+  // create_stream returns the new stream id (u64).
+  return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
+}
+
+export async function withdrawFromStream(
+  recipient: string,
+  streamId: string,
+  amount: string
+): Promise<void> {
+  await send(
+    recipient,
+    contract().call("withdraw", u64(streamId), i128(amount)),
+    () => undefined
+  );
+}
+
+export async function topUpStream(
+  sender: string,
+  streamId: string,
+  amount: string
+): Promise<void> {
+  await send(
+    sender,
+    contract().call("top_up", u64(streamId), i128(amount)),
+    () => undefined
+  );
+}
+
+export async function cancelStream(
+  caller: string,
+  streamId: string
+): Promise<void> {
+  await send(
+    caller,
+    contract().call("cancel_stream", scAddr(caller), u64(streamId)),
+    () => undefined
+  );
+}
+
+/** Read-only contract call: simulated, never signed, return value decoded. */
+async function simulateRead(
+  method: string,
+  args: xdr.ScVal[]
+): Promise<xdr.ScVal | null> {
+  const server = new rpc.Server(RPC_URL);
+  const tx = new TransactionBuilder(DUMMY_SOURCE, {
+    fee: "100",
+    networkPassphrase: NETWORK,
+  })
+    .addOperation(contract().call(method, ...args))
+    .setTimeout(30)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) return null;
+  return sim.result?.retval ?? null;
+}
+
+/** Read-only view of one stream. */
+export async function readStream(streamId: string): Promise<StreamView> {
+  const retval = await simulateRead("get_stream", [u64(streamId)]);
+  if (!retval) {
+    throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+  }
+  const raw = scValToNative(retval) as Record<string, unknown>;
+  return {
+    id: String(raw.id),
+    sender: String(raw.sender),
+    recipient: String(raw.recipient),
+    token: String(raw.token),
+    deposit: String(raw.deposit),
+    withdrawn: String(raw.withdrawn),
+    startTime: Number(raw.start_time),
+    endTime: Number(raw.end_time),
+    cancelable: Boolean(raw.cancelable),
+    status: String(raw.status),
+  };
+}

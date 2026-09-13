@@ -1,0 +1,211 @@
+# StreamPay architecture
+
+How StreamPay works internally: the storage model, the accrual math, auth and
+reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
+[README](../README.md) first for the overview.
+
+## 1. Components
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│                        StreamingPayments                           │
+│                                                                    │
+│  lib.rs      entrypoints: create_stream / withdraw /               │
+│              cancel_stream / top_up / get_stream / available       │
+│  stream.rs   Stream type, storage, checked accrual math            │
+│  errors.rs   StreamError — stable numeric codes, append-only       │
+│  events.rs   StreamCreated / Withdrawn / StreamCancelled /         │
+│              StreamToppedUp (stream_id as topic)                   │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           │ token interface (SAC-compatible)
+                           ▼
+              Stellar Asset Contract / custom token
+```
+
+## 2. Storage model
+
+| Key | Value | Purpose |
+|---|---|---|
+| `DataKey::NextStreamId` | `u64` | monotonic id counter (ids start at 1) |
+| `DataKey::Stream(id)` | `Stream` | full per-stream state |
+
+Streams live in **persistent** storage. Every mutating entrypoint that touches
+a stream extends its TTL (`TTL_THRESHOLD_LEDGERS = 200_000`, extend to
+`500_000` ≈ 29 days), so a stream that is being used never goes cold, while
+abandoned streams naturally archive to off-chain recovery — the Soroban-native
+way to bound state bloat without penalizing active users.
+
+There is deliberately **no iterable registry** of all streams (no
+`Vec<u64>` of ids): it would make `create_stream` gas cost grow with total
+stream count. Indexers recover the id list from `StreamCreated` events; a
+paginated `list_streams` is a roadmap item, not a v1 feature.
+
+## 3. Accrual math
+
+Everything reduces to one pure function (`stream.rs`):
+
+```rust
+streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, StreamError>
+```
+
+- `elapsed == 0` (before `start_time`) → `0`
+- `elapsed >= duration` (at/after `end_time`) → `deposit`
+- otherwise → `deposit * elapsed / duration`, floored
+
+Safety properties:
+
+1. **Capacity pre-check at creation/top-up.** `validate_capacity` requires
+   `deposit ≤ u128::MAX / duration`, so the worst-case product can never
+   overflow *later* — turning per-call overflow handling into a one-time
+   admission check.
+2. **Widened products.** The product is computed in `u128`; a result is capped
+   at `deposit` before narrowing back to `i128` (safe: `deposit ≤ i128::MAX`
+   was checked on admission).
+3. **Checked everywhere.** All `+`/`-` on user-relevant amounts use
+   `checked_add` / `checked_sub` and map failure to
+   `StreamError::MathOverflow`. No arithmetic operator in the contract can
+   panic.
+4. **Rounding never benefits the sender.** Floor division means a partial
+   second is *never* counted as streamed; over the full window
+   `streamed(duration) = deposit` exactly, so the recipient is always made
+   whole by the end. The floor dust accumulates to the recipient, not the
+   sender — verified by the property test (partial withdrawals ≤ full-window
+   accrual).
+
+The window is **half-open** `[start_time, end_time)`: at `now == start_time`
+nothing has accrued, at `now ≥ end_time` the full duration has elapsed.
+
+## 4. Auth model
+
+| Action | who may call | auth consumed |
+|---|---|---|
+| `create_stream` | anyone; `sender` must authorize | sender |
+| `withdraw` | recipient only | recipient |
+| `cancel_stream` | sender always; recipient iff `cancelable` | caller |
+| `top_up` | sender only | sender |
+
+The `cancelable` flag is chosen per stream at creation: payroll senders often
+want sender-only cancellation, while vesting recipients may want the right to
+walk away with what they've earned.
+
+`require_auth()` is called *before* any state reads that depend on the caller's
+identity, and errors use `StreamError` codes rather than SDK auth panics where
+the condition is a business rule (e.g. `NotAuthorized` for a stranger calling
+`cancel_stream`).
+
+## 5. Reentrancy: checks-effects-interactions
+
+Every entrypoint follows CEI ordering — all storage writes and event emissions
+happen **before** the token transfers:
+
+- `withdraw`: mark `withdrawn += amount`, set `Depleted` if fully drained,
+  emit `Withdrawn`, *then* `token.transfer`.
+- `cancel_stream`: set `Cancelled`, record the payout as withdrawn, emit
+  `StreamCancelled`, *then* the two transfers.
+- `create_stream` / `top_up`: pull tokens first, persist after — if a
+  reentrant callback abused the transfer-in, the persisted state still
+  reconciles with the balance (invariant below).
+
+Additionally, `withdraw` and `cancel_stream` re-read `status` after auth: a
+malicious token contract that reenters `withdraw` during its own transfer
+callback finds `withdrawn` already updated, and `available_amount` reverts to
+the *post-write* (smaller or zero) value. The suite contains a
+malicious-token test that attempts exactly this reentry.
+
+**Balance invariant:** the contract's token balance is always
+`≥ Σ (deposit − withdrawn)` across live streams. Funds enter only via
+`create_stream`/`top_up` and leave only via `withdraw`/`cancel_stream`, and
+every exit is bounded by the invariant `0 ≤ withdrawn ≤ streamed ≤ deposit`.
+
+## 6. Lifecycle states
+
+```text
+            create_stream
+                 │
+                 ▼
+              Active ──── cancel_stream ────▶ Cancelled (terminal)
+                 │        (pro-rata split:
+                 │         recipient ← available,
+                 │         sender ← deposit − streamed)
+                 │
+                 ├─ withdrawn == deposit ──▶ Depleted (terminal)
+                 │
+                 └─ top_up allowed while Active (even after end_time:
+                    funds become fully accrued → recipient withdraws)
+```
+
+- Cancelling a `Depleted` stream reverts (`StreamNotActive`) — there is
+  nothing left to split.
+- Cancelling a not-yet-started stream is a 100 % refund to the sender.
+- `top_up` on a cancelled/depleted stream reverts.
+
+## 7. Error surface
+
+`StreamError` variants carry explicit numeric codes (`contracterror`), part of
+the public interface:
+
+| Code | Variant | Raised when |
+|---|---|---|
+| 1 | `StreamNotFound` | no stream with this id |
+| 2–3 | `NotStreamSender` / `NotStreamRecipient` | reserved role checks |
+| 4 | `StreamNotCancellable` | recipient cancels a non-cancelable stream |
+| 5 | `StreamNotActive` | cancelled/depleted stream mutated |
+| 6 | `StartTimeInPast` | `start_time` before current ledger timestamp |
+| 7 | `InvalidTimeRange` | `end_time ≤ start_time` (zero duration) |
+| 8 | `DurationTooLong` | window exceeds `MAX_DURATION_SECONDS` (100 y) |
+| 9 | `ZeroAmount` | deposit / withdrawal / top-up `≤ 0` |
+| 10 | `AmountExceedsAvailable` | withdrawal above accrued balance |
+| 11 | `MathOverflow` | a checked computation would overflow |
+| 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
+
+Codes are **append-only**: never renumber or reuse a variant.
+
+## 8. Design decisions (and rejected alternatives)
+
+**Wall-clock accrual (`timestamp`), not per-ledger counters.** Streams are
+expressed in seconds so a stream behaves identically on testnet, mainnet, and
+in tests. On mainnet ledgers are ~5 s, so granularity is bounded by the
+ledger cadence; the floor division in `streamed_at` makes under-granular
+ledger boundaries always conservative.
+
+**Sender pulls via `transfer_from` (approval), not first-class
+`TokenInterface::approve`+escrow flows.** One approval + one create tx; the
+contract is the escrow. This matches SAC semantics (`transfer_from` consumes a
+real allowance) and keeps `create_stream` atomic.
+
+**Top-up does not extend `end_time`.** Extending would re-baseline accrual and
+can retroactively *reduce* the recipient's available balance (the extra funds
+spread over a longer window). v1 keeps top-up strictly additive — accrued
+amounts only grow. If demand exists, a `create_stream` from the remainder of a
+fully-streamed stream is the clean composition (roadmap).
+
+**No stream registry vector.** See §2 — event-sourced discovery instead.
+
+**Terminal states are terminal.** No reactivation, no partial cancellation.
+Simplicity is a security feature; richer flows belong in composing contracts
+or off-chain UX.
+
+## 9. Testing strategy
+
+- **Unit tests** (`test.rs`) cover every spec edge case: withdraw before
+  start / at / after end, sequential partial withdrawals, cancel before start
+  / fully-withdrawn / not-cancelable, top-up after end, zero-duration and
+  zero-amount rejection, `i128::MAX`-scale checked math, event emission
+  (typed, per-contract-filtered), and a malicious-token reentrancy attempt.
+- **Property test**: random `(deposit, duration)` — for random sample points
+  `t ≤ duration`, the sum of payouts up to `t` never exceeds
+  `streamed_at(deposit, duration, t)`, and `streamed_at(..., duration) ==
+  deposit` exactly.
+- **Rate math is pure** (`streamed_at` takes no `Env`), so a `cargo-fuzz`
+  target can hammer it without a Soroban host (roadmap issue).
+
+## 10. Open problems / roadmap hooks
+
+- `pause_stream` (sender-initiated temporary hold) — needs a fourth status and
+  careful `cancel_amounts` treatment; drafted as a good-first-issue.
+- Multi-token batch creation — one tx, N streams; watch the instruction
+  budget, likely `try_create_batch` with per-item results.
+- Gas optimization pass on storage reads — `cancel_stream` does one
+  read-modify-write; a `Stream` split into hot/cold fields could shave bytes.
+- Event indexer service — TypeScript worker polling `getEvents` per topic
+  `stream_id`, materializing stream history for the UI.

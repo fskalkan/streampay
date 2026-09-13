@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose an enhancement to StreamPay
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What can't users do today? Include the money-flow scenario.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: checkboxes
+    id: contract-impact
+    attributes:
+      label: Contract impact
+      options:
+        - label: This changes the contract's public API (function signatures, error codes, or events)
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

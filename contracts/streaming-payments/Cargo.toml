@@ -1,0 +1,17 @@
+[package]
+name = "streampay-contract"
+version = "0.1.0"
+edition = "2021"
+description = "StreamPay: continuous, linear streaming payments (payroll, vesting, subscriptions) for the Stellar network, built on Soroban."
+license = "Apache-2.0"
+keywords = ["stellar", "soroban", "payments", "streaming", "smart-contract"]
+categories = ["cryptography::cryptocurrencies"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
